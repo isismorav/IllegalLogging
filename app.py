@@ -46,6 +46,7 @@ def main():
     else:
         st.sidebar.header("Data Upload")
         alerts_file = st.sidebar.file_uploader("Upload Alerts GeoJSON/CSV", type=["geojson", "csv"], accept_multiple_files=False)
+        scored_file = st.sidebar.file_uploader("Upload Scored Alerts CSV (optional)", type=["csv"], accept_multiple_files=False)
         wdpa_file = st.sidebar.file_uploader("Upload WDPA GeoJSON", type=["geojson"])
         roads_file = st.sidebar.file_uploader("Upload Roads GeoJSON", type=["geojson"])
         if alerts_file and wdpa_file and roads_file:
@@ -63,6 +64,15 @@ def main():
                     return
             else:
                 alerts_gdf = gpd.read_file(alerts_file)
+            # If scored alerts CSV is uploaded, match by ID and use color from CSV
+            color_map = None
+            if scored_file:
+                scored_df = pd.read_csv(scored_file)
+                if 'id' in alerts_gdf.columns and 'id' in scored_df.columns and 'color' in scored_df.columns:
+                    color_map = dict(zip(scored_df['id'], scored_df['color']))
+                    alerts_gdf['color'] = alerts_gdf['id'].map(color_map)
+                else:
+                    st.warning("ID or color column not found in both alerts and scored CSVs. No color mapping performed.")
             wdpa_gdf = gpd.read_file(wdpa_file)
             roads_gdf = gpd.read_file(roads_file)
         else:
@@ -82,11 +92,32 @@ def main():
         except TypeError:
             pass
 
+    import folium
     m = leafmap.Map(center=[alerts_gdf.geometry.y.mean(), alerts_gdf.geometry.x.mean()], zoom=7)
-    m.add_gdf(alerts_gdf, layer_name="Alerts")
+    # Add colored alert pins using folium.Marker and folium.Icon
+    if 'color' in alerts_gdf.columns:
+        for _, row in alerts_gdf.iterrows():
+            color = row['color'] if row['color'] in ['red', 'orange', 'green'] else 'blue'
+            popup = folium.Popup(f"ID: {row.get('id', '')}<br>Risk Score: {row.get('risk_score', '')}<br>Color: {color}", max_width=250)
+            marker = folium.Marker(
+                location=[row.geometry.y, row.geometry.x],
+                popup=popup,
+                icon=folium.Icon(color=color)
+            )
+            marker.add_to(m)
+    else:
+        m.add_gdf(alerts_gdf, layer_name="Alerts")
     m.add_gdf(wdpa_gdf, layer_name="WDPA Protected Areas")
     m.add_gdf(roads_gdf, layer_name="Roads")
     m.to_streamlit(height=600)
+
+    # Add legend for color meanings
+    st.markdown("""
+    <b>Alert Risk Legend:</b><br>
+    <span style='color:red;'>Red</span>: High risk<br>
+    <span style='color:orange;'>Orange</span>: Medium risk<br>
+    <span style='color:green;'>Green</span>: Low risk<br>
+    """, unsafe_allow_html=True)
 
     st.subheader("Export Alerts as CSV")
     csv = alerts_gdf.drop(columns='geometry').to_csv(index=False)
